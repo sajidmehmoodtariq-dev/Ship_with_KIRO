@@ -1,18 +1,31 @@
 import { motion } from 'framer-motion'
-import { ArrowRight, Brain, Sparkles, Zap } from 'lucide-react'
+import { ArrowRight, BrainCircuit, ScanSearch, Sparkles } from 'lucide-react'
 
-const floatVariants = {
-  animate: {
-    y: [0, -12, 0],
-    transition: { duration: 4, repeat: Infinity, ease: 'easeInOut' },
+const FEATURES = [
+  {
+    icon: ScanSearch,
+    title: 'Gap Detection',
+    body: 'TF-IDF cosine similarity maps exactly where your knowledge trails off.',
   },
-}
-
-const features = [
-  { icon: Brain, label: 'Gap Detection', desc: 'TF-IDF cosine similarity maps exactly where your knowledge ends' },
-  { icon: Sparkles, label: 'AI Questions', desc: 'Gemini generates targeted questions for every weak concept' },
-  { icon: Zap, label: 'Instant Results', desc: 'Upload your notes and get a full analysis in seconds' },
+  {
+    icon: BrainCircuit,
+    title: 'Dynamic Concepts',
+    body: 'Gemini reads your notes and generates the 15 concepts that matter most.',
+  },
+  {
+    icon: Sparkles,
+    title: 'Targeted Quizzes',
+    body: 'Every question hits a real weak spot — no filler, no wasted time.',
+  },
 ]
+
+const cardVariants = {
+  hidden:  { opacity: 0, y: 24 },
+  visible: (i) => ({
+    opacity: 1, y: 0,
+    transition: { delay: 0.9 + i * 0.1, duration: 0.45, ease: [0.16, 1, 0.3, 1] },
+  }),
+}
 
 export default function LandingView({ onStart }) {
   return (
@@ -20,135 +33,109 @@ export default function LandingView({ onStart }) {
       key="landing"
       initial={{ opacity: 0 }}
       animate={{ opacity: 1 }}
-      exit={{ opacity: 0, y: -20 }}
-      transition={{ duration: 0.5 }}
-      className="relative min-h-screen flex flex-col items-center justify-center px-6 overflow-hidden"
+      exit={{ opacity: 0, y: -12 }}
+      transition={{ duration: 0.45 }}
+      /* pt-14 clears the 56px fixed navbar */
+      className="relative min-h-screen flex flex-col items-center justify-center px-5 pt-14 pb-16 overflow-hidden"
     >
-      {/* Background orbs */}
-      <div
-        aria-hidden="true"
-        className="pointer-events-none absolute inset-0 overflow-hidden"
-      >
-        <div className="absolute -top-40 -left-40 w-[600px] h-[600px] rounded-full opacity-20"
-          style={{ background: 'radial-gradient(circle, #6366f1 0%, transparent 70%)' }} />
-        <div className="absolute -bottom-32 -right-32 w-[500px] h-[500px] rounded-full opacity-15"
-          style={{ background: 'radial-gradient(circle, #8b5cf6 0%, transparent 70%)' }} />
-        <div className="absolute top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 w-[800px] h-[400px] opacity-5"
-          style={{ background: 'radial-gradient(ellipse, #22d3ee 0%, transparent 60%)' }} />
+      {/* ── Background layers ──────────────────────────────── */}
+      {/* Dot pattern — hero only */}
+      <div aria-hidden className="pointer-events-none absolute inset-0 dot-pattern opacity-40" />
+
+      {/* Radial colour orbs */}
+      <div aria-hidden className="pointer-events-none absolute inset-0 overflow-hidden">
+        <div className="absolute -top-48 -left-48 w-[600px] h-[600px] rounded-full"
+          style={{ background: 'radial-gradient(circle, rgba(99,102,241,0.22), transparent 70%)' }} />
+        <div className="absolute -bottom-32 -right-32 w-[500px] h-[500px] rounded-full"
+          style={{ background: 'radial-gradient(circle, rgba(139,92,246,0.15), transparent 70%)' }} />
+        <div className="absolute top-1/3 left-1/2 -translate-x-1/2 w-[900px] h-[300px]"
+          style={{ background: 'radial-gradient(ellipse, rgba(34,211,238,0.05), transparent 65%)' }} />
       </div>
 
-      {/* Grid lines */}
-      <div
-        aria-hidden="true"
-        className="pointer-events-none absolute inset-0"
-        style={{
-          backgroundImage:
-            'linear-gradient(rgba(99,102,241,0.06) 1px, transparent 1px), linear-gradient(90deg, rgba(99,102,241,0.06) 1px, transparent 1px)',
-          backgroundSize: '60px 60px',
-        }}
-      />
-
-      {/* Floating badge */}
+      {/* ── Badge ──────────────────────────────────────────── */}
       <motion.div
-        initial={{ opacity: 0, y: 20 }}
+        initial={{ opacity: 0, y: 16 }}
         animate={{ opacity: 1, y: 0 }}
-        transition={{ delay: 0.2, duration: 0.6 }}
-        className="relative z-10 mb-8 flex items-center gap-2 px-4 py-2 rounded-full border text-sm font-medium"
+        transition={{ delay: 0.15, duration: 0.5 }}
+        className="relative z-10 mb-6 flex items-center gap-2 px-4 py-1.5 rounded-full text-xs font-semibold tracking-wide"
         style={{
-          borderColor: 'rgba(99,102,241,0.4)',
-          background: 'rgba(99,102,241,0.08)',
+          background: 'rgba(99,102,241,0.1)',
+          border: '1px solid rgba(99,102,241,0.3)',
           color: '#a5b4fc',
         }}
       >
-        <Sparkles size={14} className="text-indigo-400" />
-        <span>Powered by TF-IDF &amp; Gemini AI</span>
+        <Sparkles size={11} />
+        Powered by Gemini AI + scikit-learn
       </motion.div>
 
-      {/* Hero heading */}
+      {/* ── Hero heading ───────────────────────────────────── */}
       <motion.h1
-        initial={{ opacity: 0, y: 30 }}
+        initial={{ opacity: 0, y: 28 }}
         animate={{ opacity: 1, y: 0 }}
-        transition={{ delay: 0.35, duration: 0.7, ease: 'easeOut' }}
-        className="relative z-10 text-center font-bold leading-none tracking-tight"
-        style={{ fontSize: 'clamp(2.8rem, 8vw, 6rem)' }}
+        transition={{ delay: 0.28, duration: 0.65, ease: [0.16, 1, 0.3, 1] }}
+        className="relative z-10 text-center font-extrabold leading-[1.06] tracking-tight"
+        style={{ fontSize: 'clamp(2.4rem, 7vw, 5.5rem)' }}
       >
-        <span className="gradient-text">Find What</span>
+        <span className="gradient-text">Study Smarter,</span>
         <br />
-        <span className="gradient-text">You Don&apos;t Know</span>
+        <span className="gradient-text">Not Harder</span>
       </motion.h1>
 
-      {/* Subtitle */}
+      {/* ── Subtitle ───────────────────────────────────────── */}
       <motion.p
-        initial={{ opacity: 0, y: 20 }}
+        initial={{ opacity: 0, y: 16 }}
         animate={{ opacity: 1, y: 0 }}
-        transition={{ delay: 0.55, duration: 0.6 }}
-        className="relative z-10 mt-6 max-w-xl text-center text-lg leading-relaxed"
-        style={{ color: '#94a3b8' }}
+        transition={{ delay: 0.44, duration: 0.5 }}
+        className="relative z-10 mt-5 max-w-sm text-center leading-relaxed"
+        style={{ fontSize: 'clamp(0.95rem, 2.5vw, 1.15rem)', color: '#94a3b8' }}
       >
-        Upload your notes or paste text. We analyse your knowledge coverage across
-        20 core subjects and generate quiz questions that target your exact weak spots.
+        AI finds exactly what you don&apos;t know
       </motion.p>
 
-      {/* CTA button */}
+      {/* ── CTA ────────────────────────────────────────────── */}
       <motion.div
-        initial={{ opacity: 0, y: 20 }}
+        initial={{ opacity: 0, y: 16 }}
         animate={{ opacity: 1, y: 0 }}
-        transition={{ delay: 0.7, duration: 0.6 }}
-        className="relative z-10 mt-10"
+        transition={{ delay: 0.58, duration: 0.5 }}
+        className="relative z-10 mt-9"
       >
         <motion.button
           onClick={onStart}
-          whileHover={{ scale: 1.05 }}
-          whileTap={{ scale: 0.97 }}
-          className="glow-pulse group flex items-center gap-3 px-8 py-4 rounded-2xl font-semibold text-lg text-white cursor-pointer select-none"
-          style={{
-            background: 'linear-gradient(135deg, #6366f1 0%, #8b5cf6 100%)',
-          }}
+          whileHover={{ scale: 1.06, y: -2 }}
+          whileTap={{ scale: 0.95 }}
+          className="btn-glow flex items-center gap-3 px-8 py-4 rounded-2xl font-bold text-base text-white cursor-pointer select-none"
+          style={{ background: 'linear-gradient(135deg, #6366f1 0%, #8b5cf6 100%)' }}
+          aria-label="Get started with Study Companion"
         >
-          Start Analysing
-          <motion.span
-            className="inline-flex"
-            initial={{ x: 0 }}
-            whileHover={{ x: 4 }}
-            transition={{ type: 'spring', stiffness: 400 }}
-          >
-            <ArrowRight size={20} />
-          </motion.span>
+          Get Started
+          <ArrowRight size={18} />
         </motion.button>
       </motion.div>
 
-      {/* Feature cards */}
-      <motion.div
-        initial={{ opacity: 0, y: 40 }}
-        animate={{ opacity: 1, y: 0 }}
-        transition={{ delay: 0.9, duration: 0.7 }}
-        className="relative z-10 mt-20 grid grid-cols-1 sm:grid-cols-3 gap-4 max-w-3xl w-full"
-      >
-        {features.map(({ icon: Icon, label, desc }, i) => (
+      {/* ── Feature cards ──────────────────────────────────── */}
+      <div className="relative z-10 mt-16 grid grid-cols-1 sm:grid-cols-3 gap-3 w-full max-w-2xl">
+        {FEATURES.map(({ icon: Icon, title, body }, i) => (
           <motion.div
-            key={label}
-            variants={floatVariants}
-            animate="animate"
-            className="flex flex-col gap-3 p-5 rounded-2xl border"
-            aria-label={label}
-            tabIndex={0}
-            style={{
-              background: 'rgba(255,255,255,0.03)',
-              borderColor: 'rgba(99,102,241,0.2)',
-              backdropFilter: 'blur(8px)',
-            }}
+            key={title}
+            custom={i}
+            variants={cardVariants}
+            initial="hidden"
+            animate="visible"
+            whileHover={{ y: -3, scale: 1.01 }}
+            transition={{ type: 'spring', stiffness: 300, damping: 20 }}
+            className="glass flex flex-col gap-3 p-5 rounded-2xl cursor-default"
           >
             <div
-              className="w-10 h-10 rounded-xl flex items-center justify-center"
-              style={{ background: 'rgba(99,102,241,0.15)' }}
+              className="w-9 h-9 rounded-xl flex items-center justify-center shrink-0"
+              style={{ background: 'rgba(99,102,241,0.14)' }}
             >
-              <Icon size={18} className="text-indigo-400" />
+              <Icon size={16} className="text-indigo-400" />
             </div>
-            <p className="font-semibold text-slate-200 text-sm">{label}</p>
-            <p className="text-xs leading-relaxed" style={{ color: '#64748b' }}>{desc}</p>
+            <p className="text-sm font-semibold text-slate-200">{title}</p>
+            <p className="text-xs leading-relaxed" style={{ color: '#64748b' }}>{body}</p>
           </motion.div>
         ))}
-      </motion.div>
+      </div>
     </motion.div>
   )
 }
