@@ -1,38 +1,17 @@
 /**
- * api/client.js — axios instance for the Study Companion API.
- *
- * Backend shapes:
- *   POST /api/v1/analyze       { subject, content }
- *     → { subject, concepts: [{ concept, score }] }
- *
- *   POST /api/v1/analyze/pdf   FormData: subject (string) + file (PDF)
- *     → { subject, concepts: [{ concept, score }] }
- *
- *   POST /api/v1/quiz          { subject, concepts: string[] }
- *     → { subject, items: [{ concept, explanation, question, options, correct_answer }] }
+ * api/client.js — Study Companion API
  */
 import axios from 'axios'
 
-const api = axios.create({
-  baseURL: 'http://localhost:8000/api/v1',
-  timeout: 45_000,
-})
+const BASE = 'http://localhost:8000/api/v1'
 
-/**
- * Analyse plain-text notes for a given subject.
- * @param {string} subject
- * @param {string} content
- */
+const api = axios.create({ baseURL: BASE, timeout: 45_000 })
+
 export async function analyzeText(subject, content) {
   const { data } = await api.post('/analyze', { subject, content })
   return data
 }
 
-/**
- * Analyse a PDF file for a given subject.
- * @param {string} subject
- * @param {File}   file
- */
 export async function analyzePDF(subject, file) {
   const form = new FormData()
   form.append('subject', subject)
@@ -44,11 +23,88 @@ export async function analyzePDF(subject, file) {
 }
 
 /**
- * Generate quiz items for a list of weak concepts.
+ * Stream quiz items one at a time via SSE.
+ *
+ * Calls onItem(item) for each successfully generated quiz item.
+ * Calls onError(msg) for per-concept errors (quiz continues for other concepts).
+ * Calls onDone() when all items have been streamed.
+ *
+ * Returns an AbortController so the caller can cancel the stream.
+ *
  * @param {string}   subject
  * @param {string[]} concepts
+ * @param {{ onItem, onError, onDone }} callbacks
+ * @returns {AbortController}
  */
-export async function generateQuiz(subject, concepts) {
-  const { data } = await api.post('/quiz', { subject, concepts })
-  return data
+export function streamQuiz(subject, concepts, { onItem, onError, onDone }) {
+  const controller = new AbortController()
+
+  // Fire-and-forget async function — errors bubble to onError
+  ;(async () => {
+    let resp
+    try {
+      resp = await fetch(`${BASE}/quiz/stream`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ subject, concepts }),
+        signal: controller.signal,
+      })
+    } catch (err) {
+      if (err.name === 'AbortError') return
+      onError?.(err.message || 'Could not reach the server.')
+      onDone?.()
+      return
+    }
+
+    if (!resp.ok) {
+      let detail = `Server error ${resp.status}`
+      try { detail = (await resp.json()).detail || detail } catch (_) {}
+      onError?.(detail)
+      onDone?.()
+      return
+    }
+
+    const reader = resp.body.getReader()
+    const decoder = new TextDecoder()
+    let buffer = ''
+
+    try {
+      while (true) {
+        const { done, value } = await reader.read()
+        if (done) break
+
+        buffer += decoder.decode(value, { stream: true })
+
+        // SSE lines are separated by \n\n
+        const parts = buffer.split('\n\n')
+        buffer = parts.pop() // last (possibly incomplete) chunk stays in buffer
+
+        for (const part of parts) {
+          const line = part.trim()
+          if (!line.startsWith('data:')) continue
+          const json = line.slice(5).trim()
+          if (!json) continue
+
+          let msg
+          try { msg = JSON.parse(json) } catch (_) { continue }
+
+          if (msg.done) {
+            onDone?.()
+            return
+          }
+          if (msg.error) {
+            onError?.(msg.error, msg.concept)
+          } else {
+            onItem?.(msg)
+          }
+        }
+      }
+    } catch (err) {
+      if (err.name !== 'AbortError') onError?.(err.message)
+    }
+
+    onDone?.()
+  })()
+
+  return controller
 }

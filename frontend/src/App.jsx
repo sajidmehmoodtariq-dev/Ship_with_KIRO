@@ -12,7 +12,7 @@ export default function App() {
   const [view, setView]         = useState('landing')
   const [subject, setSubject]   = useState('')
   const [concepts, setConcepts] = useState([])
-  const [quizData, setQuizData] = useState(null)
+  const [quizData, setQuizData] = useState(null)   // { subject, concepts: string[] }
 
   function handleResults(analyzeResponse) {
     setSubject(analyzeResponse.subject)
@@ -20,8 +20,9 @@ export default function App() {
     setView('results')
   }
 
-  function handleQuiz(quizResponse) {
-    setQuizData(quizResponse)
+  function handleQuiz(quizPayload) {
+    // quizPayload = { subject, concepts: string[] }
+    setQuizData(quizPayload)
     setView('quiz')
   }
 
@@ -83,7 +84,7 @@ export default function App() {
           <QuizView
             key="quiz"
             subject={quizData.subject}
-            items={quizData.items}
+            concepts={quizData.concepts}
             onRestart={handleRestart}
           />
         )}

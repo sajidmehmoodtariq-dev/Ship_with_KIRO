@@ -1,130 +1,133 @@
 """
-routers/quiz.py — POST /api/v1/quiz
+routers/quiz.py
 
-Accepts a list of weak concept names and the subject name.
-Calls Gemini once and asks for a pure JSON array — one object per concept —
-each containing:
-  - concept       : str
-  - explanation   : ~150-word plain-English explanation
-  - question      : str
-  - options       : array of exactly 4 distinct strings
-  - correct_answer: str (must match one of the options exactly)
+Two endpoints:
 
-Returns that array wrapped in a QuizResponse envelope.
+  POST /quiz/start   { subject, concepts[] }
+    → Server-Sent Events stream.
+      Emits one JSON item per concept, sequentially (no parallelism).
+      Each event: data: <QuizItem JSON>\n\n
+      Final event: data: {"done": true}\n\n
+      Error event: data: {"error": "..."}\n\n
+
+  The frontend consumes the stream and renders each question as it arrives,
+  so the user can start answering question 1 while question 2 is still generating.
+  This also naturally serialises Gemini calls → no rate-limit spikes.
 """
 
+import asyncio
+import json
 import logging
 
-from fastapi import HTTPException
+from fastapi import APIRouter, HTTPException
+from fastapi.responses import StreamingResponse
 
-from fastapi import APIRouter
 from gemini import call_gemini_json
-from models.quiz import QuizItem, QuizRequest, QuizResponse
+from models.quiz import QuizItem, QuizRequest
 
 logger = logging.getLogger(__name__)
-
 router = APIRouter()
 
 
-def _build_quiz_prompt(subject: str, concepts: list[str]) -> str:
-    concepts_list = "\n".join(f"- {c}" for c in concepts)
+# ── Prompt ────────────────────────────────────────────────────────────────────
+
+def _prompt(subject: str, concept: str) -> str:
     return (
         f'Subject: "{subject}"\n'
-        f"Weak concepts to quiz:\n{concepts_list}\n\n"
-        "For each concept above, return a JSON object with EXACTLY these fields:\n"
-        '  "concept"       : the concept name (string)\n'
-        '  "explanation"   : a clear, plain-English explanation of the concept in approximately 150 words (string)\n'
-        '  "question"      : a challenging multiple-choice question testing that concept (string)\n'
-        '  "options"       : an array of exactly 4 distinct, non-empty answer strings\n'
-        '  "correct_answer": the correct answer — must match one of the options exactly (string)\n\n'
-        "Return ONLY a pure JSON array containing one object per concept. "
-        "No markdown, no code fences, no extra keys, no explanation outside the JSON.\n"
-        "Example structure:\n"
-        '[\n'
-        '  {\n'
-        '    "concept": "example concept",\n'
-        '    "explanation": "A clear ~150 word explanation...",\n'
-        '    "question": "Which of the following best describes X?",\n'
-        '    "options": ["Option A", "Option B", "Option C", "Option D"],\n'
-        '    "correct_answer": "Option A"\n'
-        '  }\n'
-        ']'
+        f'Concept: "{concept}"\n\n'
+        "Return a single JSON object with EXACTLY these five fields:\n"
+        '  "concept"       : the concept name as given above\n'
+        '  "explanation"   : ~150-word plain-English explanation, flowing prose, no bullets\n'
+        '  "question"      : one challenging multiple-choice question\n'
+        '  "options"       : array of exactly 4 distinct non-empty strings\n'
+        '  "correct_answer": one of the 4 options verbatim\n\n'
+        "Return ONLY the raw JSON object — no markdown, no fences, no extra text.\n\n"
+        "Example:\n"
+        '{\n'
+        f'  "concept": "{concept}",\n'
+        '  "explanation": "...",\n'
+        '  "question": "Which best describes X?",\n'
+        '  "options": ["A", "B", "C", "D"],\n'
+        '  "correct_answer": "A"\n'
+        '}'
     )
 
 
-def _validate_items(raw: object, subject: str) -> list[QuizItem]:
-    """Parse and validate the LLM response into QuizItem objects."""
+# ── Validation ────────────────────────────────────────────────────────────────
 
-    if not isinstance(raw, list):
-        raise HTTPException(
-            status_code=422,
-            detail=f"LLM did not return a JSON array for quiz generation. Got: {type(raw).__name__}",
-        )
+def _validate(raw: object, concept: str) -> QuizItem:
+    # Unwrap single-element array (Gemini quirk)
+    if isinstance(raw, list) and len(raw) == 1 and isinstance(raw[0], dict):
+        raw = raw[0]
 
-    items: list[QuizItem] = []
-    for i, entry in enumerate(raw):
-        if not isinstance(entry, dict):
-            raise HTTPException(
-                status_code=422,
-                detail=f"Quiz item {i} is not a JSON object.",
-            )
+    if not isinstance(raw, dict):
+        raise ValueError(f"Expected JSON object, got {type(raw).__name__}")
 
-        # Validate options distinctness before Pydantic
-        options = entry.get("options", [])
-        if not isinstance(options, list) or len(options) < 4:
-            raise HTTPException(
-                status_code=422,
-                detail=f"Quiz item {i} ('{entry.get('concept', '?')}') does not have 4 options.",
-            )
-        if len(set(str(o) for o in options)) < 4:
-            raise HTTPException(
-                status_code=422,
-                detail=f"Quiz item {i} has duplicate options: {options}",
-            )
+    raw["concept"] = concept  # always match what was requested
 
-        # Ensure correct_answer is one of the options
-        correct = entry.get("correct_answer", "")
-        if correct not in options:
-            # Try case-insensitive match and fix in place
-            lower_options = [str(o).lower() for o in options]
-            if correct.lower() in lower_options:
-                entry["correct_answer"] = options[lower_options.index(correct.lower())]
-            else:
-                raise HTTPException(
-                    status_code=422,
-                    detail=(
-                        f"Quiz item {i}: correct_answer '{correct}' "
-                        f"does not match any option in {options}."
-                    ),
-                )
+    options = [str(o).strip() for o in raw.get("options", [])[:4]]
+    if len(options) < 4:
+        raise ValueError(f"Need 4 options, got {len(options)}")
+    if len({o.lower() for o in options}) < 4:
+        raise ValueError(f"Duplicate options: {options}")
+    raw["options"] = options
 
-        try:
-            items.append(QuizItem(**entry))
-        except Exception as exc:
-            raise HTTPException(
-                status_code=422,
-                detail=f"Quiz item {i} failed validation: {exc}",
-            ) from exc
+    correct = str(raw.get("correct_answer", "")).strip()
+    lower_map = {o.lower(): o for o in options}
+    if correct not in options:
+        if correct.lower() in lower_map:
+            correct = lower_map[correct.lower()]
+        else:
+            logger.warning("correct_answer %r not in options for '%s' — using first", correct, concept)
+            correct = options[0]
+    raw["correct_answer"] = correct
 
-    return items
+    return QuizItem(**raw)
 
 
-@router.post("/quiz", response_model=QuizResponse)
-async def generate_quiz(body: QuizRequest) -> QuizResponse:
+# ── SSE stream generator ──────────────────────────────────────────────────────
+
+async def _stream_quiz(subject: str, concepts: list[str]):
     """
-    Generate one quiz item per weak concept.
+    Async generator that yields SSE-formatted strings.
+    Calls Gemini once per concept, sequentially.
+    """
+    for concept in concepts:
+        try:
+            raw = await call_gemini_json(_prompt(subject, concept))
+            item = _validate(raw, concept)
+            payload = item.model_dump()
+        except Exception as exc:
+            err_msg = str(exc)
+            logger.error("Quiz generation failed for '%s': %s", concept, err_msg)
+            # Send an error event for this concept so the frontend can skip it
+            yield f"data: {json.dumps({'error': err_msg, 'concept': concept})}\n\n"
+            continue
 
-    Each item contains a ~150-word explanation, a multiple-choice question,
-    four answer options, and the correct answer string.
+        yield f"data: {json.dumps(payload)}\n\n"
+
+        # Small breath between calls — avoids hammering the rate limit
+        await asyncio.sleep(0.3)
+
+    yield 'data: {"done": true}\n\n'
+
+
+# ── Endpoint ──────────────────────────────────────────────────────────────────
+
+@router.post("/quiz/stream")
+async def stream_quiz(body: QuizRequest) -> StreamingResponse:
+    """
+    Stream quiz items one at a time via Server-Sent Events.
+    The client connects once and receives items as they are generated.
     """
     if not body.concepts:
-        raise HTTPException(
-            status_code=400,
-            detail="At least one concept is required.",
-        )
+        raise HTTPException(status_code=400, detail="At least one concept is required.")
 
-    prompt = _build_quiz_prompt(body.subject, body.concepts)
-    raw = await call_gemini_json(prompt)
-    items = _validate_items(raw, body.subject)
-
-    return QuizResponse(subject=body.subject, items=items)
+    return StreamingResponse(
+        _stream_quiz(body.subject, body.concepts),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "X-Accel-Buffering": "no",   # disable nginx buffering if proxied
+        },
+    )

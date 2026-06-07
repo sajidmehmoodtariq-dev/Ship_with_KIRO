@@ -1,11 +1,5 @@
 """
-gemini.py — thin async wrapper around the Gemini generateContent API.
-
-All LLM calls go through call_gemini(). It handles:
-  - API key injection
-  - Request/response envelope
-  - Timeout and HTTP error surfacing
-  - Markdown code-fence stripping (Gemini sometimes wraps JSON in ```json ... ```)
+gemini.py — async wrapper around the Gemini generateContent API.
 """
 
 import json
@@ -17,16 +11,14 @@ from fastapi import HTTPException
 
 _BASE_URL = (
     "https://generativelanguage.googleapis.com/v1beta/models/"
-    "gemini-2.0-flash:generateContent"
+    "gemini-3.5-flash:generateContent"
 )
-_TIMEOUT = 20.0
+_TIMEOUT = 30.0
 
-# Regex to strip ```json ... ``` or ``` ... ``` fences
 _FENCE_RE = re.compile(r"```(?:json)?\s*([\s\S]*?)\s*```", re.IGNORECASE)
 
 
 def _strip_fences(text: str) -> str:
-    """Remove markdown code fences that Gemini sometimes adds despite being told not to."""
     match = _FENCE_RE.search(text)
     if match:
         return match.group(1).strip()
@@ -34,12 +26,7 @@ def _strip_fences(text: str) -> str:
 
 
 async def call_gemini(prompt: str) -> str:
-    """
-    Send a prompt to Gemini and return the raw text response.
-
-    Raises HTTPException on timeout (504), upstream error (502), or
-    unexpected response structure (422).
-    """
+    """Send a prompt and return the raw text response."""
     api_key = os.getenv("GEMINI_API_KEY")
     if not api_key:
         raise HTTPException(status_code=500, detail="GEMINI_API_KEY is not configured.")
@@ -48,7 +35,7 @@ async def call_gemini(prompt: str) -> str:
         "contents": [{"parts": [{"text": prompt}]}],
         "generationConfig": {
             "temperature": 0.4,
-            "maxOutputTokens": 2048,
+            "maxOutputTokens": 8192,
         },
     }
 
@@ -61,40 +48,26 @@ async def call_gemini(prompt: str) -> str:
             )
             resp.raise_for_status()
         except httpx.TimeoutException as exc:
-            raise HTTPException(
-                status_code=504,
-                detail=f"Gemini API timed out after {_TIMEOUT}s.",
-            ) from exc
+            raise HTTPException(status_code=504, detail=f"Gemini timed out after {_TIMEOUT}s.") from exc
         except httpx.HTTPStatusError as exc:
             raise HTTPException(
                 status_code=502,
-                detail=f"Gemini API returned HTTP {exc.response.status_code}.",
+                detail=f"Gemini returned HTTP {exc.response.status_code}.",
             ) from exc
         except httpx.RequestError as exc:
-            raise HTTPException(
-                status_code=502,
-                detail=f"Could not reach Gemini API: {exc}",
-            ) from exc
+            raise HTTPException(status_code=502, detail=f"Cannot reach Gemini: {exc}") from exc
 
     try:
         data = resp.json()
         raw: str = data["candidates"][0]["content"]["parts"][0]["text"]
     except (KeyError, IndexError, TypeError) as exc:
-        raise HTTPException(
-            status_code=422,
-            detail=f"Unexpected Gemini response structure: {exc}",
-        ) from exc
+        raise HTTPException(status_code=422, detail=f"Unexpected Gemini response: {exc}") from exc
 
     return _strip_fences(raw)
 
 
 async def call_gemini_json(prompt: str) -> object:
-    """
-    Call Gemini and parse the response as JSON.
-
-    Returns the parsed Python object (list or dict).
-    Raises HTTPException 422 if the response is not valid JSON.
-    """
+    """Call Gemini and parse the response as JSON."""
     raw = await call_gemini(prompt)
     try:
         return json.loads(raw)
@@ -102,5 +75,5 @@ async def call_gemini_json(prompt: str) -> object:
         snippet = raw[:300]
         raise HTTPException(
             status_code=422,
-            detail=f"LLM response is not valid JSON: {exc}. Raw (truncated): {snippet!r}",
+            detail=f"LLM response is not valid JSON: {exc}. Raw: {snippet!r}",
         ) from exc

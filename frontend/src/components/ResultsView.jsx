@@ -1,11 +1,9 @@
 import { useState } from 'react'
 import { motion, AnimatePresence } from 'framer-motion'
 import toast from 'react-hot-toast'
-import {
-  ArrowLeft, Loader2, Sparkles,
+import { ArrowLeft, Loader2, Sparkles,
   BookOpen, TrendingUp, TrendingDown, Minus,
 } from 'lucide-react'
-import { generateQuiz } from '../api/client'
 
 const QUIZ_THRESHOLD = 0.4
 
@@ -129,13 +127,9 @@ export default function ResultsView({ subject, concepts, onBack, onQuiz }) {
 
   async function handleQuiz() {
     if (loading || !quizList.length) return
-    setLoading(true)
-    try {
-      onQuiz(await generateQuiz(subject, quizList))
-    } catch (err) {
-      toast.error(err?.response?.data?.detail || 'Could not generate quiz.')
-      setLoading(false)
-    }
+    // Pass subject + concepts to QuizView — it will stream them itself
+    setLoading(false)
+    onQuiz({ subject, concepts: quizList })
   }
 
   return (
@@ -207,14 +201,11 @@ export default function ResultsView({ subject, concepts, onBack, onQuiz }) {
           </span>
         </motion.div>
 
-        {/* Grid — shows skeletons while quiz loading */}
+        {/* Grid */}
         <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-3 mb-10">
-          {loading
-            ? Array.from({ length: concepts.length }, (_, i) => <SkeletonCard key={i} />)
-            : sorted.map((c, i) => (
-                <ConceptCard key={c.concept} concept={c.concept} score={c.score} index={i} />
-              ))
-          }
+          {sorted.map((c, i) => (
+            <ConceptCard key={c.concept} concept={c.concept} score={c.score} index={i} />
+          ))}
         </div>
 
         {/* Quiz CTA */}
