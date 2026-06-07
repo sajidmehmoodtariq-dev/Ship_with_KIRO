@@ -1,49 +1,42 @@
 """
-main.py — AI Study Companion FastAPI application entry point.
+main.py — AI Study Companion FastAPI application.
 
-Startup sequence:
-  1. concept_graph.py is imported → validates the concept graph (raises on malformed data)
-  2. tfidf_engine.py is imported → fits the TF-IDF vectoriser on concept keywords
-  3. Routers are registered under /api/v1
-  4. CORS middleware allows requests from the Vite dev server (http://localhost:5173)
+Endpoints:
+  POST /api/v1/analyze      — text notes + subject → 15 LLM concepts + TF-IDF scores
+  POST /api/v1/analyze/pdf  — PDF upload + subject → same
+  POST /api/v1/quiz         — weak concepts + subject → explanation + quiz question per concept
+  GET  /health              — liveness probe
 """
 
 import logging
 
+from dotenv import load_dotenv
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
-# Import tfidf_engine at module level so the vectoriser is fitted before the
-# first request arrives. Any startup error surfaces immediately.
-import tfidf_engine  # noqa: F401
+load_dotenv()
 
-from routers.upload import router as upload_router
+from routers.analyze import router as analyze_router
 from routers.quiz import router as quiz_router
 
-# ---------------------------------------------------------------------------
-# Logging configuration — writes to stdout so uvicorn captures it
-# ---------------------------------------------------------------------------
+# ── Logging ──────────────────────────────────────────────────────────────────
 logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s | %(levelname)s | %(name)s | %(message)s",
     datefmt="%Y-%m-%dT%H:%M:%SZ",
 )
 
-# ---------------------------------------------------------------------------
-# Application
-# ---------------------------------------------------------------------------
+# ── App ───────────────────────────────────────────────────────────────────────
 app = FastAPI(
     title="AI Study Companion",
     description=(
-        "Identifies knowledge gaps in student notes via TF-IDF cosine similarity "
-        "and generates targeted multiple-choice quiz questions using the Gemini API."
+        "Generates subject-specific concepts via Gemini, scores student note "
+        "coverage with TF-IDF cosine similarity, and produces targeted quiz questions."
     ),
-    version="1.0.0",
+    version="2.0.0",
 )
 
-# ---------------------------------------------------------------------------
-# CORS — allow the React/Vite dev server and the same-origin production build
-# ---------------------------------------------------------------------------
+# ── CORS ──────────────────────────────────────────────────────────────────────
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["http://localhost:5173"],
@@ -52,14 +45,12 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# ---------------------------------------------------------------------------
-# Routers
-# ---------------------------------------------------------------------------
-app.include_router(upload_router, prefix="/api/v1", tags=["upload"])
-app.include_router(quiz_router, prefix="/api/v1", tags=["quiz"])
+# ── Routers ───────────────────────────────────────────────────────────────────
+app.include_router(analyze_router, prefix="/api/v1", tags=["analyze"])
+app.include_router(quiz_router,    prefix="/api/v1", tags=["quiz"])
 
 
+# ── Health ────────────────────────────────────────────────────────────────────
 @app.get("/health", tags=["health"])
-def health_check() -> dict:
-    """Simple liveness probe."""
-    return {"status": "ok"}
+def health() -> dict:
+    return {"status": "ok", "version": "2.0.0"}

@@ -1,193 +1,130 @@
 """
 routers/quiz.py — POST /api/v1/quiz
 
-Accepts a list of gap concept names, calls the Gemini API to generate
-exactly 3 multiple-choice questions per concept, and returns structured JSON.
+Accepts a list of weak concept names and the subject name.
+Calls Gemini once and asks for a pure JSON array — one object per concept —
+each containing:
+  - concept       : str
+  - explanation   : ~150-word plain-English explanation
+  - question      : str
+  - options       : array of exactly 4 distinct strings
+  - correct_answer: str (must match one of the options exactly)
+
+Returns that array wrapped in a QuizResponse envelope.
 """
 
-import json
 import logging
-import os
 
-import httpx
-from dotenv import load_dotenv
-from fastapi import APIRouter, HTTPException
+from fastapi import HTTPException
 
-from models.quiz import QuizQuestion, QuizRequest, QuizResponse
-
-load_dotenv()
+from fastapi import APIRouter
+from gemini import call_gemini_json
+from models.quiz import QuizItem, QuizRequest, QuizResponse
 
 logger = logging.getLogger(__name__)
 
 router = APIRouter()
 
-_GEMINI_API_URL = (
-    "https://generativelanguage.googleapis.com/v1beta/models/"
-    "gemini-2.0-flash:generateContent"
-)
-_TIMEOUT_SECONDS = 10.0
-_QUESTIONS_PER_CONCEPT = 3
 
-
-def _build_prompt(concept: str) -> str:
-    """
-    Build a Gemini prompt that requests exactly 3 multiple-choice questions
-    for the given concept in strict JSON format.
-    """
+def _build_quiz_prompt(subject: str, concepts: list[str]) -> str:
+    concepts_list = "\n".join(f"- {c}" for c in concepts)
     return (
-        f'Generate exactly {_QUESTIONS_PER_CONCEPT} multiple-choice quiz questions '
-        f'about the topic: "{concept}".\n\n'
-        "Return ONLY a valid JSON array (no markdown, no code fences, no extra text). "
-        "Each element must have exactly these fields:\n"
-        '  "prompt":        string — the question text\n'
-        '  "options":       array of exactly 4 distinct non-empty strings — the answer choices\n'
-        '  "correct_index": integer 0-3 — zero-based index of the correct answer in "options"\n'
-        f'  "concept":       string — must be exactly "{concept}"\n\n'
-        "Example element:\n"
-        '{"prompt":"What is X?","options":["A","B","C","D"],"correct_index":2,"concept":"' + concept + '"}\n\n'
-        "Output the JSON array now:"
+        f'Subject: "{subject}"\n'
+        f"Weak concepts to quiz:\n{concepts_list}\n\n"
+        "For each concept above, return a JSON object with EXACTLY these fields:\n"
+        '  "concept"       : the concept name (string)\n'
+        '  "explanation"   : a clear, plain-English explanation of the concept in approximately 150 words (string)\n'
+        '  "question"      : a challenging multiple-choice question testing that concept (string)\n'
+        '  "options"       : an array of exactly 4 distinct, non-empty answer strings\n'
+        '  "correct_answer": the correct answer — must match one of the options exactly (string)\n\n'
+        "Return ONLY a pure JSON array containing one object per concept. "
+        "No markdown, no code fences, no extra keys, no explanation outside the JSON.\n"
+        "Example structure:\n"
+        '[\n'
+        '  {\n'
+        '    "concept": "example concept",\n'
+        '    "explanation": "A clear ~150 word explanation...",\n'
+        '    "question": "Which of the following best describes X?",\n'
+        '    "options": ["Option A", "Option B", "Option C", "Option D"],\n'
+        '    "correct_answer": "Option A"\n'
+        '  }\n'
+        ']'
     )
 
 
-def _parse_questions(raw: str, concept: str) -> list[QuizQuestion]:
-    """
-    Parse and validate the raw LLM response string into QuizQuestion objects.
+def _validate_items(raw: object, subject: str) -> list[QuizItem]:
+    """Parse and validate the LLM response into QuizItem objects."""
 
-    Raises HTTPException 422 if the JSON is unparseable or structurally invalid.
-    """
-    # Strip markdown code fences that some models insert despite being told not to
-    cleaned = raw.strip()
-    if cleaned.startswith("```"):
-        lines = cleaned.splitlines()
-        # Remove first and last fence lines
-        cleaned = "\n".join(
-            line for line in lines
-            if not line.strip().startswith("```")
-        ).strip()
-
-    try:
-        data = json.loads(cleaned)
-    except json.JSONDecodeError as exc:
-        snippet = cleaned[:200]
+    if not isinstance(raw, list):
         raise HTTPException(
             status_code=422,
-            detail=f"Quiz response could not be parsed as JSON: {exc}. Raw (truncated): {snippet!r}",
-        ) from exc
-
-    if not isinstance(data, list):
-        raise HTTPException(
-            status_code=422,
-            detail=f"Expected a JSON array from LLM, got {type(data).__name__}",
+            detail=f"LLM did not return a JSON array for quiz generation. Got: {type(raw).__name__}",
         )
 
-    questions: list[QuizQuestion] = []
-    for i, item in enumerate(data):
-        if not isinstance(item, dict):
+    items: list[QuizItem] = []
+    for i, entry in enumerate(raw):
+        if not isinstance(entry, dict):
             raise HTTPException(
                 status_code=422,
-                detail=f"Question {i} is not a JSON object",
+                detail=f"Quiz item {i} is not a JSON object.",
             )
 
-        # Ensure options are distinct
-        options = item.get("options", [])
-        if len(set(options)) != 4:
+        # Validate options distinctness before Pydantic
+        options = entry.get("options", [])
+        if not isinstance(options, list) or len(options) < 4:
             raise HTTPException(
                 status_code=422,
-                detail=f"Question {i} does not have exactly 4 distinct options: {options}",
+                detail=f"Quiz item {i} ('{entry.get('concept', '?')}') does not have 4 options.",
+            )
+        if len(set(str(o) for o in options)) < 4:
+            raise HTTPException(
+                status_code=422,
+                detail=f"Quiz item {i} has duplicate options: {options}",
             )
 
-        # Enforce concept matches what was requested
-        item["concept"] = concept
+        # Ensure correct_answer is one of the options
+        correct = entry.get("correct_answer", "")
+        if correct not in options:
+            # Try case-insensitive match and fix in place
+            lower_options = [str(o).lower() for o in options]
+            if correct.lower() in lower_options:
+                entry["correct_answer"] = options[lower_options.index(correct.lower())]
+            else:
+                raise HTTPException(
+                    status_code=422,
+                    detail=(
+                        f"Quiz item {i}: correct_answer '{correct}' "
+                        f"does not match any option in {options}."
+                    ),
+                )
 
         try:
-            question = QuizQuestion(**item)
+            items.append(QuizItem(**entry))
         except Exception as exc:
             raise HTTPException(
                 status_code=422,
-                detail=f"Question {i} failed validation: {exc}",
+                detail=f"Quiz item {i} failed validation: {exc}",
             ) from exc
 
-        questions.append(question)
-
-    return questions
+    return items
 
 
 @router.post("/quiz", response_model=QuizResponse)
 async def generate_quiz(body: QuizRequest) -> QuizResponse:
     """
-    Generate 3 multiple-choice quiz questions for each supplied concept name.
+    Generate one quiz item per weak concept.
 
-    Requires at least one concept. Calls the Gemini API once per concept.
+    Each item contains a ~150-word explanation, a multiple-choice question,
+    four answer options, and the correct answer string.
     """
     if not body.concepts:
         raise HTTPException(
             status_code=400,
-            detail="At least one gap concept is required.",
+            detail="At least one concept is required.",
         )
 
-    api_key = os.getenv("GEMINI_API_KEY")
-    if not api_key:
-        raise HTTPException(
-            status_code=500,
-            detail="GEMINI_API_KEY is not configured on the server.",
-        )
+    prompt = _build_quiz_prompt(body.subject, body.concepts)
+    raw = await call_gemini_json(prompt)
+    items = _validate_items(raw, body.subject)
 
-    all_questions: list[QuizQuestion] = []
-
-    async with httpx.AsyncClient(timeout=_TIMEOUT_SECONDS) as client:
-        for concept in body.concepts:
-            prompt_text = _build_prompt(concept)
-            payload = {
-                "contents": [
-                    {
-                        "parts": [{"text": prompt_text}]
-                    }
-                ],
-                "generationConfig": {
-                    "temperature": 0.7,
-                    "maxOutputTokens": 1024,
-                },
-            }
-
-            try:
-                response = await client.post(
-                    f"{_GEMINI_API_URL}?key={api_key}",
-                    json=payload,
-                    headers={"Content-Type": "application/json"},
-                )
-                response.raise_for_status()
-            except httpx.TimeoutException as exc:
-                raise HTTPException(
-                    status_code=504,
-                    detail=f"Quiz generation timed out after {_TIMEOUT_SECONDS}s for concept '{concept}'.",
-                ) from exc
-            except httpx.HTTPStatusError as exc:
-                raise HTTPException(
-                    status_code=502,
-                    detail=(
-                        f"Quiz generation failed for concept '{concept}': "
-                        f"Gemini API returned HTTP {exc.response.status_code}."
-                    ),
-                ) from exc
-            except httpx.RequestError as exc:
-                raise HTTPException(
-                    status_code=502,
-                    detail=f"Quiz generation failed: could not reach Gemini API. {exc}",
-                ) from exc
-
-            # Extract the text part from the Gemini response envelope
-            try:
-                gemini_data = response.json()
-                raw_text: str = (
-                    gemini_data["candidates"][0]["content"]["parts"][0]["text"]
-                )
-            except (KeyError, IndexError, TypeError) as exc:
-                raise HTTPException(
-                    status_code=422,
-                    detail=f"Unexpected Gemini response structure for concept '{concept}': {exc}",
-                ) from exc
-
-            questions = _parse_questions(raw_text, concept)
-            all_questions.extend(questions)
-
-    return QuizResponse(questions=all_questions)
+    return QuizResponse(subject=body.subject, items=items)
